@@ -5,17 +5,21 @@
 (define-constant err-owner-only (err u100))
 (define-constant err-invalid-module (err u101))
 (define-constant err-already-completed (err u102))
+(define-constant err-insufficient-score (err u103))
 
 ;; Data Variables
 (define-data-var next-module-id uint u0)
 (define-data-var next-quiz-id uint u0)
+(define-data-var next-reward-id uint u0)
 
 ;; Data Maps
 (define-map modules uint 
   {
     title: (string-ascii 100),
     description: (string-ascii 500),
-    creator: principal
+    creator: principal,
+    min-score: uint,
+    reward-amount: uint
   }
 )
 
@@ -31,14 +35,22 @@
   {
     completed: bool,
     score: uint,
-    timestamp: uint
+    timestamp: uint,
+    reward-claimed: bool
+  }
+)
+
+(define-map user-rewards principal
+  {
+    total-rewards: uint,
+    modules-completed: uint
   }
 )
 
 ;; Public Functions
 
 ;; Add a new learning module
-(define-public (add-module (title (string-ascii 100)) (description (string-ascii 500)))
+(define-public (add-module (title (string-ascii 100)) (description (string-ascii 500)) (min-score uint) (reward-amount uint))
   (let
     ((module-id (var-get next-module-id)))
     (if (is-eq tx-sender contract-owner)
@@ -47,7 +59,9 @@
           {
             title: title,
             description: description,
-            creator: tx-sender
+            creator: tx-sender,
+            min-score: min-score,
+            reward-amount: reward-amount
           }
         )
         (var-set next-module-id (+ module-id u1))
@@ -80,19 +94,34 @@
   )
 )
 
-;; Complete a module and record score
+;; Complete a module and claim reward if eligible
 (define-public (complete-module (module-id uint) (score uint))
   (let
-    ((user-key {user: tx-sender, module-id: module-id}))
-    (asserts! (is-some (map-get? modules module-id)) err-invalid-module)
+    (
+      (user-key {user: tx-sender, module-id: module-id})
+      (module (unwrap! (map-get? modules module-id) err-invalid-module))
+      (user-rewards (default-to {total-rewards: u0, modules-completed: u0} 
+        (map-get? user-rewards tx-sender)))
+    )
     (asserts! (is-none (map-get? user-progress user-key)) err-already-completed)
+    (asserts! (>= score (get min-score module)) err-insufficient-score)
+    
     (map-set user-progress user-key
       {
         completed: true,
         score: score,
-        timestamp: block-height
+        timestamp: block-height,
+        reward-claimed: true
       }
     )
+
+    (map-set user-rewards tx-sender
+      {
+        total-rewards: (+ (get total-rewards user-rewards) (get reward-amount module)),
+        modules-completed: (+ (get modules-completed user-rewards) u1)
+      }
+    )
+    
     (ok true)
   )
 )
@@ -109,4 +138,8 @@
 
 (define-read-only (get-user-progress (user principal) (module-id uint))
   (ok (map-get? user-progress {user: user, module-id: module-id}))
+)
+
+(define-read-only (get-user-rewards (user principal))
+  (ok (map-get? user-rewards user))
 )
